@@ -63,13 +63,14 @@ def train(args):
         args.dataset_probs,
         strategy,
         args.seed,
-        max_count=args.max_samples,
+        max_count_train=args.max_samples_train,
+        max_count_eval=args.max_samples_eval,
         stopping_strategy="all_exhausted",
         train_split=args.train_split,
         eval_split=args.eval_split,
     )
-    train_data = train_data.select(range(min(args.max_samples, len(train_data))))
-    eval_data = eval_data.select(range(min(args.max_samples, len(eval_data))))
+    # train_data = train_data.select(range(min(args.max_samples, len(train_data))))
+    # eval_data = eval_data.select(range(min(args.max_samples, len(eval_data))))
     train_dataset = RewardDataset(
         train_data, tokenizer, args.max_len, strategy, input_template=args.input_template, is_dpo=True
     )
@@ -134,6 +135,9 @@ def train(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    # freeze
+    parser.add_argument("--freeze_strategy", type=str, default=None)
+    parser.add_argument("--transformer_layers_path", type=str, default="model.model.layers")
     # Checkpoints
     parser.add_argument("--save_path", type=str, default="./ckpt")
     parser.add_argument("--save_steps", type=int, default=-1)
@@ -144,6 +148,8 @@ if __name__ == "__main__":
     parser.add_argument("--max_ckpt_mem", type=int, default=1000)  # 1000GB
 
     # DeepSpeed
+    parser.add_argument("--device_map", default=None, type=str, help="device_map, when close deepspeed for debug, set device_map to auto for split model on multiple gpu")
+    parser.add_argument("--close_deepspeed", action="store_true", default=False, help="close deepspeed, for single process debug mode")
     parser.add_argument("--micro_train_batch_size", type=int, default=8, help="batch size per GPU")
     parser.add_argument("--train_batch_size", type=int, default=128, help="Global training batch size")
     parser.add_argument("--load_checkpoint", action="store_true", default=False)
@@ -190,11 +196,12 @@ if __name__ == "__main__":
     parser.add_argument("--prompt_key", type=str, default="prompt")
     parser.add_argument("--chosen_key", type=str, default="chosen")
     parser.add_argument("--rejected_key", type=str, default="rejected")
-    parser.add_argument("--input_template", type=str, default="User: {}\nAssistant: ")
+    parser.add_argument("--input_template", type=str, default="{}")
     parser.add_argument(
         "--apply_chat_template", action="store_true", default=False, help="Use HF tokenizer chat template"
     )
-    parser.add_argument("--max_samples", type=int, default=1e8, help="Max number of samples")
+    parser.add_argument("--max_samples_train", type=int, default=1e8, help="Max number of samples for train")
+    parser.add_argument("--max_samples_eval", type=int, default=1e8, help="Max number of samples for eval")
     parser.add_argument("--max_len", type=int, default=512)
 
     # wandb pamameters

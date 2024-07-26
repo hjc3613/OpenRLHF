@@ -28,6 +28,9 @@ def train(args):
         target_modules=args.target_modules,
         lora_dropout=args.lora_dropout,
         ds_config=strategy.get_ds_train_config(is_actor=True),
+        freeze_strategy=args.freeze_strategy,
+        transformer_layers_path=args.transformer_layers_path,
+        device_map=args.device_map
     )
 
     # configure tokenizer
@@ -35,21 +38,21 @@ def train(args):
 
     strategy.print(model)
 
-    # configure optimizer
-    optim = strategy.create_optimizer(model, lr=args.learning_rate, betas=args.adam_betas, weight_decay=args.l2)
-
+    
     # prepare for data and dataset
     train_data, eval_data = blending_datasets(
         args.dataset,
         args.dataset_probs,
         strategy,
         args.seed,
-        max_count=args.max_samples,
+        max_count_train=args.max_samples_train,
+        max_count_eval=args.max_samples_eval,
         train_split=args.train_split,
         eval_split=args.eval_split,
+        load_ds_method=args.load_ds_method
     )
-    train_data = train_data.select(range(min(args.max_samples, len(train_data))))
-    eval_data = eval_data.select(range(min(args.max_samples, len(eval_data))))
+    # train_data = train_data.select(range(min(args.max_samples, len(train_data))))
+    # eval_data = eval_data.select(range(min(args.max_samples, len(eval_data))))
     train_dataset = SFTDataset(
         train_data,
         tokenizer,
@@ -81,6 +84,9 @@ def train(args):
         False,
         eval_dataset.packing_collate_fn if args.packing_samples else eval_dataset.collate_fn,
     )
+
+    # configure optimizer
+    optim = strategy.create_optimizer(model, lr=args.learning_rate, betas=args.adam_betas, weight_decay=args.l2)
 
     # scheduler
     num_update_steps_per_epoch = len(train_dataloader) // strategy.accumulated_gradient
@@ -132,6 +138,10 @@ def train(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+
+    # freeze
+    parser.add_argument("--freeze_strategy", type=str, default=None)
+    parser.add_argument("--transformer_layers_path", type=str, default="model.model.layers")
     # Checkpoint
     parser.add_argument("--save_path", type=str, default="./ckpt")
     parser.add_argument("--save_steps", type=int, default=-1)
@@ -143,6 +153,8 @@ if __name__ == "__main__":
     parser.add_argument("--load_checkpoint", action="store_true", default=False)
 
     # DeepSpeed
+    parser.add_argument("--device_map", default=None, type=str, help="device_map, when close deepspeed for debug, set device_map to auto for split model on multiple gpu")
+    parser.add_argument("--close_deepspeed", action="store_true", default=False, help="close deepspeed, for single process debug mode")
     parser.add_argument("--micro_train_batch_size", type=int, default=8, help="batch size per GPU")
     parser.add_argument("--train_batch_size", type=int, default=128, help="Global training batch size")
     parser.add_argument("--max_norm", type=float, default=1.0, help="Gradient clipping")
@@ -184,15 +196,17 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_probs", type=str, default="1.0", help="sampling probs for datasets")
     parser.add_argument("--train_split", type=str, default="train", help="train split of the HF dataset")
     parser.add_argument("--eval_split", type=str, default="test", help="test split of the dataset")
+    parser.add_argument("--load_ds_method", type=str, default="datasets.load_dataset",choices=["datasets.load_dataset", "custom"])
 
     parser.add_argument("--input_key", type=str, default="input", help="JSON dataset key")
     parser.add_argument("--output_key", type=str, default="output", help="JSON dataset key")
-    parser.add_argument("--input_template", type=str, default="User: {}\nAssistant: ")
+    parser.add_argument("--input_template", type=str, default="{}")
     parser.add_argument(
         "--apply_chat_template", action="store_true", default=False, help="Use HF tokenizer chat template"
     )
     parser.add_argument("--tokenizer_chat_template", type=str, default=None)
-    parser.add_argument("--max_samples", type=int, default=1e8, help="Max number of samples")
+    parser.add_argument("--max_samples_train", type=int, default=1e8, help="Max number of samples for train")
+    parser.add_argument("--max_samples_eval", type=int, default=1e8, help="Max number of samples for eval")
     parser.add_argument("--max_len", type=int, default=2048, help="Max tokens for the samples")
 
     # wandb pamameters

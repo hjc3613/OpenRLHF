@@ -1,7 +1,6 @@
 from typing import Optional, Tuple, Union
 
 import bitsandbytes as bnb
-import deepspeed
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -76,3 +75,38 @@ def masked_normalize(tensor: torch.Tensor, mask: torch.Tensor, dim: int = 1, eps
     mean_centered = tensor - mean
     var = masked_mean(mean_centered**2, mask, dim=dim)
     return mean_centered * var.clamp(min=eps).rsqrt()
+
+def parse_freeze_strategy(strategy):
+    action, layers = strategy.split(':', maxsplit=1)
+    if layers.startswith('[') and layers.endswith(']'):
+        layer_list = []
+        for i in layers.strip('][').split(','):
+            if '-' in i:
+                start, end = i.split('-')
+                start, end = int(start), int(end)
+                layer_list.extend(list(range(start, end+1)))
+            else:
+                layer_list.append(int(i))
+    elif len(layers.split('-')) == 3:
+        layer_list = []
+        start, end, step = [int(i) for i in layers.split('-')]
+        layer_list = list(range(start, end+1, step))
+    else:
+        raise Exception('冻结策略格式有误')
+    return action, layer_list
+
+def freeze_transformer_layers_for_qwen_new(model, layers, layer_path, action):
+    if action == 'active':
+        for param in model.parameters():
+            param.requires_grad = False
+
+    layer_path_lst = layer_path.split('.')
+    for sub_module in layer_path_lst[1:]:
+        model = getattr(model, sub_module)
+    for i, layer in enumerate(model, start=1):
+        if i in layers:
+            for param in layer.parameters():
+                if action == 'active':
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False

@@ -14,7 +14,7 @@ import torch.optim as optim
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from peft import PeftModel, get_peft_model_state_dict
 from torch import distributed as dist
-from torch.optim import Optimizer
+from torch.optim import Optimizer, AdamW
 from torch.utils.data import DataLoader, DistributedSampler
 
 from openrlhf.models import Actor
@@ -425,3 +425,84 @@ class DeepspeedStrategy(ABC):
             load_lr_scheduler_states=load_lr_scheduler_states,
             load_module_only=load_module_only,
         )
+
+class NoDeepspeedStrategy(DeepspeedStrategy):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.micro_steps = 0
+    def setup_distributed(self, timeout=timedelta(minutes=30)) -> None:
+        self.set_seed(self.seed)
+        self.accumulated_gradient = self.train_batch_size // self.micro_train_batch_size 
+    
+    def setup_dataloader(
+        self,
+        replay_buffer,
+        batch_size: int,
+        pin_memory: bool = False,
+        shuffle=True,
+        collate_fn=None,
+        drop_last=True,
+        sampler=None,
+    ):
+        return DataLoader(
+            replay_buffer,
+            batch_size=batch_size,
+            sampler=sampler,
+            drop_last=drop_last,
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+        )
+    
+    def _ds_init_train_model(self, model, optim, scheduler):
+
+        return model, optim, scheduler
+    
+    def _ds_init_eval_model(self, model):
+        
+        return model
+    def save_model(self, model: nn.Module, tokenizer, output_dir, **kwargs) -> None:
+        pass
+    def all_reduce(self, data, op="mean"):
+            return data
+    def all_gather(self, data):
+        return data
+    
+    def is_rank_0(self) -> bool:
+        return True
+    def get_rank(self) -> int:
+        return 0
+    def save_ckpt(self, model, save_dir, tag=None, max_num=3, max_mem=1000, client_state={}, save_latest=True):
+        pass
+    def load_ckpt(
+        self,
+        model,
+        load_dir,
+        tag=None,
+        load_module_strict=True,
+        load_optimizer_states=True,
+        load_lr_scheduler_states=True,
+        load_module_only=False,
+    ):
+        pass
+
+    def backward(self, loss: torch.Tensor, model: nn.Module, optimizer: optim.Optimizer, **kwargs) -> None:
+        # if isinstance(model, Actor):
+        #     model = model.model
+        loss.backward()
+        self.micro_steps += 1
+
+    def optimizer_step(
+        self,
+        optimizer: optim.Optimizer,
+        model: nn.Module,
+        scheduler,
+        name="model",
+        **kwargs,
+    ) -> None:
+        if isinstance(model, Actor):
+            model = model.model
+        if (self.micro_steps + 1) % self.accumulated_gradient == 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), self.args.max_norm)
+            optimizer.step()
+            optimizer.zero_grad()
+            scheduler.step()

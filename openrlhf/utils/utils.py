@@ -1,17 +1,49 @@
 import os
 from pathlib import Path
 
+import pandas as pd
+from tqdm import tqdm
+import io
+import json
 from datasets import Dataset, interleave_datasets, load_dataset
 from transformers import AutoTokenizer
 
-from openrlhf.utils import DeepspeedStrategy
+from openrlhf.utils import DeepspeedStrategy, NoDeepspeedStrategy
 
 DEFAULT_PAD_TOKEN = "[PAD]"
 DEFAULT_EOS_TOKEN = "</s>"
 DEFAULT_BOS_TOKEN = "<s>"
 DEFAULT_UNK_TOKEN = "<unk>"
 
+def _make_r_io_base(f, mode: str):
+    if not isinstance(f, io.IOBase):
+        f = open(f, mode=mode)
+    return f
 
+def jload_v2(f, mode="r"):
+    f = _make_r_io_base(f, mode)
+    jdict = []
+    for line in tqdm(f, desc='load dataset...'):
+        jdict.append(json.loads(line))
+    f.close
+    return jdict
+
+def xlsload(f):
+    df = pd.read_excel(f)
+    result = [dict(row) for idx, row in df.iterrows()]
+    return result
+
+def load_file(file:str):
+    if file.endswith('.jsonl') or file.endswith('.txt'):
+        return jload_v2(file)
+    elif file.endswith('.xlsx'):
+        return xlsload(file)
+    elif os.path.isdir(file):
+        result = []
+        for sub_file in os.listdir(file):
+            result.extend(load_file(os.path.join(file, sub_file)))
+        return result
+    
 def get_tokenizer(pretrain, model, padding_side="left", strategy=None, use_fast=True):
     tokenizer = AutoTokenizer.from_pretrained(pretrain, trust_remote_code=True, use_fast=use_fast)
     tokenizer.padding_side = padding_side
@@ -26,15 +58,26 @@ def get_tokenizer(pretrain, model, padding_side="left", strategy=None, use_fast=
 
 
 def get_strategy(args):
-    strategy = DeepspeedStrategy(
-        seed=getattr(args, "seed", 42),
-        max_norm=getattr(args, "max_norm", 1.0),
-        micro_train_batch_size=getattr(args, "micro_train_batch_size", 1),
-        train_batch_size=getattr(args, "train_batch_size", 128),
-        zero_stage=args.zero_stage,
-        bf16=getattr(args, "bf16", True),
-        args=args,
-    )
+    if not args.close_deepspeed:
+        strategy = DeepspeedStrategy(
+            seed=getattr(args, "seed", 42),
+            max_norm=getattr(args, "max_norm", 1.0),
+            micro_train_batch_size=getattr(args, "micro_train_batch_size", 1),
+            train_batch_size=getattr(args, "train_batch_size", 128),
+            zero_stage=args.zero_stage,
+            bf16=getattr(args, "bf16", True),
+            args=args,
+        )
+    else:
+        strategy = NoDeepspeedStrategy(
+            seed=getattr(args, "seed", 42),
+            max_norm=getattr(args, "max_norm", 1.0),
+            micro_train_batch_size=getattr(args, "micro_train_batch_size", 1),
+            train_batch_size=getattr(args, "train_batch_size", 128),
+            zero_stage=args.zero_stage,
+            bf16=getattr(args, "bf16", True),
+            args=args,
+        )
     return strategy
 
 
@@ -43,11 +86,13 @@ def blending_datasets(
     probabilities,
     strategy=None,
     seed=42,
-    max_count=5000000,
+    max_count_train=5000000,
+    max_count_eval=100,
     return_eval=True,
     stopping_strategy="first_exhausted",
     train_split=None,
     eval_split=None,
+    load_ds_method='datasets.load_dataset'
 ):
     datasets = datasets.split(",")
     probabilities = list(map(float, probabilities.split(",")))
@@ -56,62 +101,76 @@ def blending_datasets(
     train_data_list = []
     eval_data_list = []
     for i, dataset in enumerate(datasets):
-        dataset = dataset.strip()
-        dataset_subfold_list = dataset.split("@")
-        strategy.print(f"dataset: {dataset}")
-        # local dir with python script or common local file
-        if os.path.isdir(os.path.join(os.getcwd(), dataset)) or dataset.endswith(
-            (".json", ".jsonl", ".csv", ".parquet", ".txt")
-        ):
-            if dataset.endswith((".json", ".jsonl", ".csv", ".parquet", ".txt")):
-                files = dataset
-                data_type = os.path.splitext(files)[1][1:]
-            else:
-                path = Path(dataset)
-                script = [str(file.resolve()) for file in Path(path).rglob("*.py")]
-                extensions = ("*.json", "*.jsonl", "*.csv", "*.parquet", "*.txt")
-                files = [str(file) for ext in extensions for file in Path(path).rglob(ext)]
-                strategy.print(f"script: {script}")
-                strategy.print(f"files: {files}")
-                # For dir, follow python script or first file type
-                data_type = script[0] if len(script) == 1 else os.path.splitext(files[0])[1][1:]
-            # reformat data type
-            if data_type in ["json", "jsonl"]:
-                data_type = "json"
-            elif data_type == "txt":
-                data_type = "text"
-            elif data_type.endswith(".py"):
-                # load local dir with python script
-                files = None
-            if data_type.endswith(".py"):
-                strategy.print(f"load {dataset} with script {data_type}")
-            else:
-                strategy.print(f"load {files} from {dataset}")
-            data = load_dataset(data_type, data_files=files)
-        elif len(dataset_subfold_list) == 2:
-            dataset = dataset_subfold_list[0]
-            subfold = dataset_subfold_list[1]
-            data = load_dataset(dataset, data_dir=subfold.strip())
-        elif len(dataset_subfold_list) == 1:
-            dataset = dataset_subfold_list[0]
-            data = load_dataset(dataset)
+        if load_ds_method == 'custom':
+            data = load_file(dataset)
+            data = Dataset.from_list(data)
         else:
-            raise Exception(f"Dataset Name {dataset}: Format error")
+            dataset = dataset.strip()
+            dataset_subfold_list = dataset.split("@")
+            strategy.print(f"dataset: {dataset}")
+            # local dir with python script or common local file
+            if os.path.isdir(os.path.join(os.getcwd(), dataset)) or dataset.endswith(
+                (".json", ".jsonl", ".csv", ".parquet", ".txt")
+            ):
+                if dataset.endswith((".json", ".jsonl", ".csv", ".parquet", ".txt")):
+                    files = dataset
+                    data_type = os.path.splitext(files)[1][1:]
+                else:
+                    path = Path(dataset)
+                    script = [str(file.resolve()) for file in Path(path).rglob("*.py")]
+                    extensions = ("*.json", "*.jsonl", "*.csv", "*.parquet", "*.txt")
+                    files = [str(file) for ext in extensions for file in Path(path).rglob(ext)]
+                    strategy.print(f"script: {script}")
+                    strategy.print(f"files: {files}")
+                    # For dir, follow python script or first file type
+                    data_type = script[0] if len(script) == 1 else os.path.splitext(files[0])[1][1:]
+                # reformat data type
+                if data_type in ["json", "jsonl"]:
+                    data_type = "json"
+                elif data_type == "txt":
+                    data_type = "text"
+                elif data_type.endswith(".py"):
+                    # load local dir with python script
+                    files = None
+                if data_type.endswith(".py"):
+                    strategy.print(f"load {dataset} with script {data_type}")
+                else:
+                    strategy.print(f"load {files} from {dataset}")
+                data = load_dataset(data_type, data_files=files, streaming=True)
+            elif len(dataset_subfold_list) == 2:
+                dataset = dataset_subfold_list[0]
+                subfold = dataset_subfold_list[1]
+                data = load_dataset(dataset, data_dir=subfold.strip())
+            elif len(dataset_subfold_list) == 1:
+                dataset = dataset_subfold_list[0]
+                data = load_dataset(dataset)
+            else:
+                raise Exception(f"Dataset Name {dataset}: Format error")
 
         if train_split and train_split in data:
-            train_data = data[train_split].select(range(min(max_count, len(data[train_split]))))
+            # train_data = data[train_split].select(range(min(max_count, len(data[train_split]))))
+            train_data = data[train_split]
         else:
-            train_data = data.select(range(min(max_count, len(data))))
-        train_data_list.append(train_data)
+            train_data = data
+        max_count_train = min(max_count_train, len(train_data))
+        train_data = Dataset.from_list(list(train_data.shuffle(seed=seed).take(max_count_train)))
 
         if return_eval:
             if eval_split and eval_split in data:
-                eval_data = data[eval_split].select(range(min(max_count, len(data[eval_split]))))
+                # eval_data = data[eval_split].select(range(min(max_count_eval, len(data[eval_split]))))
+                eval_data = data[eval_split]
+                eval_data = Dataset.from_list(list(eval_data.shuffle(seed=seed).take(max_count_eval)))
             # train will contains eval? TODO
             else:
-                eval_data = train_data.select(range(min(max_count, int(len(train_data) * 0.03))))
+                if max_count_eval > 0:
+                    split = train_data.train_test_split(test_size=min(0.2, max_count_eval/max_count_train))
+                    train_data, eval_data = split['train'], split['test']
+                else:
+                    eval_data = Dataset.from_list([])
+                
             eval_data_list.append(eval_data)
 
+        train_data_list.append(train_data)
     # merge datasets
     if strategy.is_rank_0():
         print(train_data_list)

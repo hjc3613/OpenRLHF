@@ -9,7 +9,7 @@ from peft.tuners.lora import LoraLayer
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig, PreTrainedModel
 from transformers.deepspeed import HfDeepSpeedConfig
 
-from .utils import log_probs_from_logits
+from .utils import log_probs_from_logits, freeze_transformer_layers_for_qwen_new, parse_freeze_strategy
 
 
 class Actor(nn.Module):
@@ -34,6 +34,8 @@ class Actor(nn.Module):
         target_modules=None,
         ds_config=None,
         device_map=None,
+        freeze_strategy=None,
+        transformer_layers_path=None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -67,9 +69,15 @@ class Actor(nn.Module):
                 torch_dtype=torch.bfloat16 if bf16 else "auto",
                 device_map=device_map,
             )
+            if freeze_strategy:
+                assert lora_rank <=0, "冻结模式与LORA不能同时开启"
+                assert transformer_layers_path is not None, "开启冻结模式，需提供transformer_layers_path"
+                activation, layers = parse_freeze_strategy(freeze_strategy)
+                freeze_transformer_layers_for_qwen_new(self.model, layers=layers, layer_path=transformer_layers_path, action=activation)
 
             # LoRA
             if lora_rank > 0:
+                assert freeze_strategy is not None,"冻结模式与LORA不能同时开启"
                 # https://github.com/huggingface/peft/issues/137
                 self.model.enable_input_require_grads()
                 lora_config = LoraConfig(

@@ -20,13 +20,14 @@ def get_train_ds_config(
     grad_accum_dtype=None,
     disable_trace_cache=False,
 ):
-    device = "cpu" if offload else "none"
+    device = "nvme" if offload else "none"
     zero_opt_dict = {
         "stage": stage,
         "offload_param": {"device": device},
         "offload_optimizer": {
-            "device": "cpu" if adam_offload else "none",
+            "device": "nvme" if adam_offload else "none",
             "pin_memory": True,
+            "nvme_path":"/cache"
         },
         "sub_group_size": "auto",
         "stage3_max_live_parameters": "auto",
