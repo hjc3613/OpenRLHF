@@ -5,7 +5,7 @@ MASTER_PORT=$(shuf -n 1 -i 10000-65535)
 read -r -d '' training_commands <<EOF
 openrlhf.cli.train_sft \
    --max_len 2048 \
-   --dataset /fl-ift/med/hujunchao/git_root/OpenRLHF/data/yingxiang_baogao/end2end_template_abnormal_to_report.xlsx \
+   --dataset your_excel_file_contain_input_and_output_coumns.xlsx \
    --input_key input \
    --output_key output \
    --train_batch_size 16 \
@@ -23,7 +23,8 @@ openrlhf.cli.train_sft \
    --flash_attn \
    --learning_rate 2e-5 \
    --gradient_checkpointing \
-   --load_ds_method custom 
+   --load_ds_method custom \
+   --adam_offload
 EOF
     # --wandb [WANDB_TOKENS]
     # --adam_offload
