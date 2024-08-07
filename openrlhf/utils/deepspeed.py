@@ -25,6 +25,7 @@ from .deepspeed_utils import (
     get_optimizer_grouped_parameters,
     get_train_ds_config,
 )
+from ..datasets.batch_sampler import DistributedLengthBasedBatchSampler
 
 ModelOptimPair = Tuple[nn.Module, Optimizer]
 ModelOrModelOptimPair = Union[nn.Module, ModelOptimPair]
@@ -432,6 +433,8 @@ class NoDeepspeedStrategy(DeepspeedStrategy):
         self.micro_steps = 0
     def setup_distributed(self, timeout=timedelta(minutes=30)) -> None:
         self.set_seed(self.seed)
+        self.args.local_rank = 0
+        self.world_size = 1
         self.accumulated_gradient = self.train_batch_size // self.micro_train_batch_size 
     
     def setup_dataloader(
@@ -444,14 +447,27 @@ class NoDeepspeedStrategy(DeepspeedStrategy):
         drop_last=True,
         sampler=None,
     ):
+        kwargs = {}
+        if len(replay_buffer) == 0:
+            kwargs["batch_sampler"] = None
+        elif sampler is not None:
+            kwargs['batch_sampler'] = sampler
+        else:
+            kwargs["batch_sampler"] = DistributedLengthBasedBatchSampler(
+                                    replay_buffer,
+                                    batch_size=batch_size,
+                                    rank=0,
+                                    num_replicas=2,
+                                    shuffle=shuffle,
+                                )
+        kwargs['collate_fn'] = collate_fn
+
         return DataLoader(
-            replay_buffer,
-            batch_size=batch_size,
-            sampler=sampler,
-            drop_last=drop_last,
-            collate_fn=collate_fn,
-            pin_memory=pin_memory,
-        )
+                replay_buffer,
+                num_workers=0,
+                pin_memory=pin_memory,
+                **kwargs,
+            )
     
     def _ds_init_train_model(self, model, optim, scheduler):
 
@@ -506,3 +522,12 @@ class NoDeepspeedStrategy(DeepspeedStrategy):
             optimizer.step()
             optimizer.zero_grad()
             scheduler.step()
+
+    def create_optimizer(self, model, **kwargs) -> Optimizer:
+        if isinstance(model, Actor):
+            model = model.model
+        # Optimizer
+        AdamOptimizer = AdamW
+        optim_params = get_optimizer_grouped_parameters(model, kwargs["weight_decay"])
+        optim = AdamOptimizer(optim_params, **kwargs)
+        return optim

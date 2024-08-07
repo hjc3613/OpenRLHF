@@ -1,16 +1,105 @@
 from typing import Optional, Tuple, Union
+import json
+import os
+import inspect
 
-import deepspeed
+from torch import distributed as dist
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from peft import LoraConfig, TaskType, get_peft_model
 from peft.tuners.lora import LoraLayer
-from transformers import AutoModelForCausalLM, BitsAndBytesConfig, PreTrainedModel
+import transformers
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig, AutoConfig
+from transformers.dynamic_module_utils import get_class_from_dynamic_module
 from transformers.deepspeed import HfDeepSpeedConfig
 
 from .utils import log_probs_from_logits, freeze_transformer_layers_for_qwen_new, parse_freeze_strategy
+from openrlhf.model_importer import get_model_class
 
+
+def load_model_class(model_path, decoder_layer_name=None):
+    # 1. 获取模型配置
+    # config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    
+    # 2. 从配置文件中读取 auto_map
+    config_file = os.path.join(model_path, "config.json")
+    with open(config_file, 'r') as f:
+        config_dict = json.load(f)
+    
+    auto_map = config_dict.get("auto_map", {})
+    architectures = config_dict.get("architectures", [])
+    # 3. 获取 AutoModelForCausalLM 对应的类名
+    model_class_path = auto_map.get("AutoModelForCausalLM")
+    if model_class_path:
+        # module_name, class_name = model_class_path.rsplit('.', 1)
+        model_class = get_class_from_dynamic_module(
+                    model_class_path, model_path,
+                )
+        model_class.register_for_auto_class()
+        if decoder_layer_name is not None:
+            decoder_class_path = model_class_path.rsplit('.', 1)[0]+'.'+decoder_layer_name
+            decoder_class = get_class_from_dynamic_module(
+                decoder_class_path, model_path
+            )
+        else:
+            decoder_class = None
+    else:
+        model_class = getattr(transformers, architectures[0])
+        if decoder_layer_name is not None:
+            model_file = inspect.getfile(model_class).strip('.py').split('/')+[decoder_layer_name]
+            transformers_idx = model_file.index('transformers')
+            start_module = transformers
+            for idx, submodel in enumerate(model_file[transformers_idx+1:]):
+                start_module = getattr(start_module, submodel)
+            decoder_class = start_module
+        else:
+            decoder_class = None
+    return model_class, decoder_class
+
+def load_huggingface_model(path, device_map, nf4_config, bf16, model_type, low_cpu=True):
+    Model, DecoderLayer, ModelConfig = get_model_class(model_type)
+    if model_type=='qwen1':
+        flash_attn_args = {
+                'use_flash_attn':True
+            }
+    else:
+        flash_attn_args = {
+                'attn_implementation':'flash_attention_2'
+            }
+    if low_cpu:
+        if dist.get_rank() == 0:
+            model = Model.from_pretrained(
+                path,
+                device_map=device_map,
+                use_cache=False,
+                trust_remote_code=True,
+                # quantization_config=nf4_config,
+                torch_dtype=torch.bfloat16 if bf16 else "auto",
+                **flash_attn_args
+            )
+        else:
+            config = ModelConfig.from_pretrained(
+                path, 
+                torch_dtype=torch.bfloat16 if bf16 else "auto", 
+                trust_remote_code=True,
+                use_cache=False, 
+                # quantization_config=nf4_config,
+                **flash_attn_args
+            )
+            with torch.device('meta'):
+                model = Model(config)
+    else:
+        model = Model.from_pretrained(
+                path,
+                trust_remote_code=True,
+                quantization_config=nf4_config,
+                torch_dtype=torch.bfloat16 if bf16 else "auto",
+                device_map=device_map,
+                **flash_attn_args
+        )
+
+    return model
 
 class Actor(nn.Module):
     """
@@ -36,6 +125,8 @@ class Actor(nn.Module):
         device_map=None,
         freeze_strategy=None,
         transformer_layers_path=None,
+        low_cpu=False,
+        model_type=None,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -61,13 +152,22 @@ class Actor(nn.Module):
             else:
                 nf4_config = None
 
-            self.model = AutoModelForCausalLM.from_pretrained(
-                pretrain_or_model,
-                trust_remote_code=True,
-                attn_implementation=attn_implementation,
-                quantization_config=nf4_config,
-                torch_dtype=torch.bfloat16 if bf16 else "auto",
-                device_map=device_map,
+            # self.model = AutoModelForCausalLM.from_pretrained(
+            #     pretrain_or_model,
+            #     trust_remote_code=True,
+            #     attn_implementation=attn_implementation,
+            #     quantization_config=nf4_config,
+            #     torch_dtype=torch.bfloat16 if bf16 else "auto",
+            #     device_map=device_map,
+            # )
+            
+            self.model = load_huggingface_model(
+                pretrain_or_model, 
+                device_map=device_map, 
+                nf4_config=nf4_config, 
+                bf16=bf16, 
+                low_cpu=low_cpu,
+                model_type=model_type
             )
             if freeze_strategy:
                 assert lora_rank <=0, "冻结模式与LORA不能同时开启"

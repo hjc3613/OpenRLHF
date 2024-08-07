@@ -1,0 +1,1 @@
+from .import_model import get_model_class

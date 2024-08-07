@@ -113,7 +113,7 @@ class SFTDataset(Dataset):
         input_token["attention_mask"][0][-1] = True
 
         info = {"input": prompt, "output": response, "input_length": input_token["attention_mask"].int().sum().item()}
-        return prompt_ids_len, input_token["input_ids"], input_token["attention_mask"], info
+        return input_token["input_ids"], prompt_ids_len,  input_token["attention_mask"], info
 
     def collate_fn(self, item_list):
         prompt_ids_lens = []
@@ -121,7 +121,7 @@ class SFTDataset(Dataset):
         attention_masks = []
         infos = {"input": [], "output": []}
 
-        for prompt_ids_len, input_id, attention_mask, info in item_list:
+        for input_id, prompt_ids_len, attention_mask, info in item_list:
             prompt_ids_lens.append(prompt_ids_len)
             input_ids.append(input_id)
             attention_masks.append(attention_mask)

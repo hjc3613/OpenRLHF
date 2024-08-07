@@ -5,10 +5,11 @@ import pandas as pd
 from tqdm import tqdm
 import io
 import json
-from datasets import Dataset, interleave_datasets, load_dataset
+from datasets import Dataset, interleave_datasets, load_dataset, concatenate_datasets
 from transformers import AutoTokenizer
 
 from openrlhf.utils import DeepspeedStrategy, NoDeepspeedStrategy
+from openrlhf.utils import FSDPStrategy
 
 DEFAULT_PAD_TOKEN = "[PAD]"
 DEFAULT_EOS_TOKEN = "</s>"
@@ -29,7 +30,7 @@ def jload_v2(f, mode="r"):
     return jdict
 
 def xlsload(f):
-    df = pd.read_excel(f)
+    df = pd.read_excel(f).fillna('')
     result = [dict(row) for idx, row in df.iterrows()]
     return result
 
@@ -58,16 +59,27 @@ def get_tokenizer(pretrain, model, padding_side="left", strategy=None, use_fast=
 
 
 def get_strategy(args):
-    if not args.close_deepspeed:
-        strategy = DeepspeedStrategy(
-            seed=getattr(args, "seed", 42),
-            max_norm=getattr(args, "max_norm", 1.0),
-            micro_train_batch_size=getattr(args, "micro_train_batch_size", 1),
-            train_batch_size=getattr(args, "train_batch_size", 128),
-            zero_stage=args.zero_stage,
-            bf16=getattr(args, "bf16", True),
-            args=args,
-        )
+    if not args.close_deepspeed_or_fsdp:
+        if args.use_fsdp:
+            strategy = FSDPStrategy(
+                seed=getattr(args, "seed", 42),
+                max_norm=getattr(args, "max_norm", 1.0),
+                micro_train_batch_size=getattr(args, "micro_train_batch_size", 1),
+                train_batch_size=getattr(args, "train_batch_size", 128),
+                zero_stage=args.zero_stage,
+                bf16=getattr(args, "bf16", True),
+                args=args,
+            )
+        else:
+            strategy = DeepspeedStrategy(
+                seed=getattr(args, "seed", 42),
+                max_norm=getattr(args, "max_norm", 1.0),
+                micro_train_batch_size=getattr(args, "micro_train_batch_size", 1),
+                train_batch_size=getattr(args, "train_batch_size", 128),
+                zero_stage=args.zero_stage,
+                bf16=getattr(args, "bf16", True),
+                args=args,
+            )
     else:
         strategy = NoDeepspeedStrategy(
             seed=getattr(args, "seed", 42),
@@ -82,7 +94,7 @@ def get_strategy(args):
 
 
 def blending_datasets(
-    datasets,
+    datasets_name,
     probabilities,
     strategy=None,
     seed=42,
@@ -92,15 +104,20 @@ def blending_datasets(
     stopping_strategy="first_exhausted",
     train_split=None,
     eval_split=None,
-    load_ds_method='datasets.load_dataset'
+    load_ds_method='datasets.load_dataset',
 ):
-    datasets = datasets.split(",")
-    probabilities = list(map(float, probabilities.split(",")))
-    assert len(probabilities) == len(datasets)
+    datasets_name = datasets_name.split(",")
+    if probabilities is not None:
+        probabilities = list(map(float, probabilities.split(",")))
+        assert len(probabilities) == len(datasets_name)
 
     train_data_list = []
     eval_data_list = []
-    for i, dataset in enumerate(datasets):
+    for i, dataset in enumerate(datasets_name):
+        if '#' in dataset:
+            dataset, subset, label_type = dataset.split('#')
+        else:
+            subset, label_type = None, None
         if load_ds_method == 'custom':
             data = load_file(dataset)
             data = Dataset.from_list(data)
@@ -143,7 +160,7 @@ def blending_datasets(
                 data = load_dataset(dataset, data_dir=subfold.strip())
             elif len(dataset_subfold_list) == 1:
                 dataset = dataset_subfold_list[0]
-                data = load_dataset(dataset)
+                data = load_dataset(dataset, name=subset)
             else:
                 raise Exception(f"Dataset Name {dataset}: Format error")
 
@@ -154,7 +171,10 @@ def blending_datasets(
             train_data = data
         max_count_train = min(max_count_train, len(train_data))
         train_data = Dataset.from_list(list(train_data.shuffle(seed=seed).take(max_count_train)))
-
+        def add_column(example):
+            example['label_type'] = label_type
+            return example
+        train_data = train_data.map(add_column)
         if return_eval:
             if eval_split and eval_split in data:
                 # eval_data = data[eval_split].select(range(min(max_count_eval, len(data[eval_split]))))
@@ -167,7 +187,7 @@ def blending_datasets(
                     train_data, eval_data = split['train'], split['test']
                 else:
                     eval_data = Dataset.from_list([])
-                
+            eval_data = eval_data.map(add_column)
             eval_data_list.append(eval_data)
 
         train_data_list.append(train_data)
@@ -175,19 +195,26 @@ def blending_datasets(
     if strategy.is_rank_0():
         print(train_data_list)
 
-    train_dataset = interleave_datasets(
-        train_data_list,
-        probabilities=probabilities,
-        seed=seed,
-        stopping_strategy=stopping_strategy,
-    )
+    # train_dataset = interleave_datasets(
+    #     train_data_list,
+    #     probabilities=probabilities,
+    #     seed=seed,
+    #     stopping_strategy=stopping_strategy,
+    # )
+    # if return_eval:
+    #     eval_dataset = interleave_datasets(
+    #         eval_data_list,
+    #         probabilities=None,
+    #         seed=seed,
+    #         stopping_strategy=stopping_strategy,
+    #     )
+    #     return train_dataset, eval_dataset
+    # else:
+    #     return train_dataset
+    train_dataset = concatenate_datasets(train_data_list)
     if return_eval:
-        eval_dataset = interleave_datasets(
-            eval_data_list,
-            probabilities=probabilities,
-            seed=seed,
-            stopping_strategy=stopping_strategy,
-        )
+        eval_dataset = concatenate_datasets(eval_data_list)
         return train_dataset, eval_dataset
     else:
         return train_dataset
+

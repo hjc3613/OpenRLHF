@@ -30,7 +30,9 @@ def train(args):
         ds_config=strategy.get_ds_train_config(is_actor=True),
         freeze_strategy=args.freeze_strategy,
         transformer_layers_path=args.transformer_layers_path,
-        device_map=args.device_map
+        device_map=args.device_map,
+        low_cpu=args.use_fsdp,
+        model_type=args.model_type
     )
 
     # configure tokenizer
@@ -97,7 +99,7 @@ def train(args):
         optim,
         num_warmup_steps=math.ceil(max_steps * 0.03),
         num_training_steps=max_steps,
-        scheduler_specific_kwargs={"min_lr": args.learning_rate * 0.1},
+        scheduler_specific_kwargs={"min_lr": args.learning_rate * 0.0},
     )
 
     # gradient_checkpointing
@@ -139,9 +141,19 @@ def train(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
-    # freeze
+    # new added
     parser.add_argument("--freeze_strategy", type=str, default=None)
     parser.add_argument("--transformer_layers_path", type=str, default="model.model.layers")
+    parser.add_argument("--use_fsdp", default=False, action="store_true")
+    parser.add_argument("--parallel_granularity", type=str, default='QWenBlock', help='Qwen2DecoderLayer、QWenBlock ...')
+    parser.add_argument("--fsdp_cpu_offload", default=False, action="store_true")
+    parser.add_argument("--fsdp_activation_checkpointing", default=False, action='store_true')
+    parser.add_argument("--model_type", type=str, required=True, help='qwen1, qwen2, llama, mixtral...')
+    parser.add_argument("--load_ds_method", type=str, default="datasets.load_dataset",choices=["datasets.load_dataset", "custom"])
+    
+    parser.add_argument("--device_map", default=None, type=str, help="device_map, when close deepspeed for debug, set device_map to auto for split model on multiple gpu")
+    
+    parser.add_argument("--close_deepspeed_or_fsdp", action="store_true", default=False, help="close deepspeed, for single process debug mode")
     # Checkpoint
     parser.add_argument("--save_path", type=str, default="./ckpt")
     parser.add_argument("--save_steps", type=int, default=-1)
@@ -153,8 +165,7 @@ if __name__ == "__main__":
     parser.add_argument("--load_checkpoint", action="store_true", default=False)
 
     # DeepSpeed
-    parser.add_argument("--device_map", default=None, type=str, help="device_map, when close deepspeed for debug, set device_map to auto for split model on multiple gpu")
-    parser.add_argument("--close_deepspeed", action="store_true", default=False, help="close deepspeed, for single process debug mode")
+    
     parser.add_argument("--micro_train_batch_size", type=int, default=8, help="batch size per GPU")
     parser.add_argument("--train_batch_size", type=int, default=128, help="Global training batch size")
     parser.add_argument("--max_norm", type=float, default=1.0, help="Gradient clipping")
@@ -196,7 +207,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_probs", type=str, default="1.0", help="sampling probs for datasets")
     parser.add_argument("--train_split", type=str, default="train", help="train split of the HF dataset")
     parser.add_argument("--eval_split", type=str, default="test", help="test split of the dataset")
-    parser.add_argument("--load_ds_method", type=str, default="datasets.load_dataset",choices=["datasets.load_dataset", "custom"])
+    
 
     parser.add_argument("--input_key", type=str, default="input", help="JSON dataset key")
     parser.add_argument("--output_key", type=str, default="output", help="JSON dataset key")

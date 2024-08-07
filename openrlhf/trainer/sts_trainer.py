@@ -8,7 +8,7 @@ from torch.optim import Optimizer
 from torch.utils.data import DistributedSampler
 from tqdm import tqdm
 
-from openrlhf.models import DPOLoss
+from openrlhf.models import SoftmaxLoss, MultipleNegativesRankingLoss, CoSENTLoss
 
 
 class STSTrainer(ABC):
@@ -52,11 +52,9 @@ class STSTrainer(ABC):
         self.args = strategy.args
 
         self.beta = beta
-        self.loss_fn = DPOLoss(self.beta, self.args.label_smoothing, self.args.ipo)
-
-        # Mixtral 8*7b
-        self.aux_loss = self.args.aux_loss_coef > 1e-8
-
+        # self.loss_fn_softmax = SoftmaxLoss(self.model.model.get_input_embeddings().embedding_dim, self.args.num_labels, device='cuda:'+str(torch.cuda.current_device()))
+        self.loss_fn_multi_neg_rank = MultipleNegativesRankingLoss()
+        self.loss_fn_cosent = CoSENTLoss()
         self._wandb = None
         if self.strategy.args.use_wandb and self.strategy.is_rank_0():
             import wandb
@@ -91,6 +89,12 @@ class STSTrainer(ABC):
             desc="Train epoch",
             disable=not self.strategy.is_rank_0(),
         )
+        profiler = torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True
+        )
         for epoch in range(self.epochs):
             step_bar = tqdm(
                 range(self.train_dataloader.__len__()),
@@ -102,63 +106,62 @@ class STSTrainer(ABC):
                 self.train_dataloader.sampler.set_epoch(epoch)
 
             self.model.train()
-            acc_mean = 0
-            loss_mean = 0
+            loss_score = 0
+            loss_mean_score = 0
+            loss_none = 0
+            loss_mean_none = 0
             # train
-            for sentence1_ids, sentence1_masks, sentence2_ids, sentence2_masks, labels in self.train_dataloader:
-                sentence1_ids = sentence1_ids.squeeze(1).to(torch.cuda.current_device())
-                sentence1_masks = sentence1_masks.squeeze(1).to(torch.cuda.current_device())
-                sentence2_ids = sentence2_ids.squeeze(1).to(torch.cuda.current_device())
-                sentence2_masks = sentence2_masks.squeeze(1).to(torch.cuda.current_device())
+            with profiler:
+                tmp = 0
+                for sentence1_ids, sentence1_masks, sentence2_ids, sentence2_masks, labels, label_types in self.train_dataloader:
+                    tmp +=1
+                    if tmp==3:
+                        break
+                    sentence1_ids = sentence1_ids.squeeze(1).to(torch.cuda.current_device())
+                    sentence1_masks = sentence1_masks.squeeze(1).to(torch.cuda.current_device())
+                    sentence2_ids = sentence2_ids.squeeze(1).to(torch.cuda.current_device())
+                    sentence2_masks = sentence2_masks.squeeze(1).to(torch.cuda.current_device())
 
-                sentence1_output = self.model.model(sentence1_ids, attention_mask=sentence1_masks, output_hidden_states=True)
-                sentence2_output = self.model.model(sentence2_ids, attention_mask=sentence2_masks, output_hidden_states=True)
-                sentence1_hidden = sentence1_output.hidden_states[-1]
-                sentence2_hidden = sentence2_output.hidden_states[-1]
-                # mean pooling
-                sentence1_embed = (sentence1_hidden * sentence1_masks.unsqueeze(-1)).sum(1) / sentence1_masks.sum(1).unsqueeze(1)
-                sentence2_embed = (sentence2_hidden * sentence2_masks.unsqueeze(-1)).sum(1) / sentence2_masks.sum(1).unsqueeze(1)
-                # normalize
-                sentence1_embed = F.normalize(sentence1_embed, p=2, dim=1)
-                sentence2_embed = F.normalize(sentence2_embed, p=2, dim=1)
+                    sentence1_output = self.model.model(sentence1_ids, attention_mask=sentence1_masks, output_hidden_states=True)
+                    sentence2_output = self.model.model(sentence2_ids, attention_mask=sentence2_masks, output_hidden_states=True)
+                    sentence1_hidden = sentence1_output.hidden_states[-1]
+                    sentence2_hidden = sentence2_output.hidden_states[-1]
+                    # mean pooling
+                    sentence1_embed = (sentence1_hidden * sentence1_masks.unsqueeze(-1)).sum(1) / sentence1_masks.sum(1).unsqueeze(1)
+                    sentence2_embed = (sentence2_hidden * sentence2_masks.unsqueeze(-1)).sum(1) / sentence2_masks.sum(1).unsqueeze(1)
+                    # normalize
+                    sentence1_embed = F.normalize(sentence1_embed, p=2, dim=1)
+                    sentence2_embed = F.normalize(sentence2_embed, p=2, dim=1)
+                    if label_types[0] == 'score':
+                        labels = torch.concat(labels).to(sentence1_embed.device)
+                        loss = self.loss_fn_cosent([sentence1_embed, sentence2_embed], labels)
+                    elif label_types[0] == 'None':
+                        loss = self.loss_fn_multi_neg_rank([sentence1_embed, sentence2_embed])
+                    
+                    self.strategy.backward(loss, self.model, self.optimizer)
+                    self.strategy.optimizer_step(self.optimizer, self.model, self.scheduler)
+                    if label_types[0] == 'score':
+                        loss_mean_score = loss_mean_score * 0.9 + 0.1 * loss.item()
+                        loss_score = loss.item()
+                    if label_types[0] == 'None':
+                        loss_mean_none = loss_mean_none * 0.9 + 0.1 * loss.item()
+                        loss_none = loss.item()
+                    # dpo logs
+                    logs_dict = {
+                        'ls_score':loss_score,
+                        "ls_m_score": loss_mean_score,
+                        "ls_m_none":loss_mean_none,
+                        'ls_none':loss_none
+                    }
+                    # logs/checkpoints/evaluate
+                    self.save_logs_and_checkpoints(args, global_step, step_bar, logs_dict)
 
-                chosen_logps, rejected_logps, aux_loss = self.concatenated_forward(
-                    self.model, chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens
-                )
-                with torch.no_grad():
-                    reference_chosen_logps, reference_rejected_logps, _ = self.concatenated_forward(
-                        self.ref_model, chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens
-                    )
-
-                # loss function
-                preference_loss, chosen_reward, reject_reward = self.loss_fn(
-                    chosen_logps, rejected_logps, reference_chosen_logps, reference_rejected_logps
-                )
-                # mixtral
-                if not self.aux_loss:
-                    aux_loss = 0
-
-                loss = preference_loss + aux_loss * self.args.aux_loss_coef
-                self.strategy.backward(loss, self.model, self.optimizer)
-                self.strategy.optimizer_step(self.optimizer, self.model, self.scheduler)
-
-                acc_mean = acc_mean * 0.9 + 0.1 * (chosen_reward > reject_reward).float().mean().item()
-                loss_mean = loss_mean * 0.9 + 0.1 * loss.item()
-                # dpo logs
-                logs_dict = {
-                    "preference_loss": preference_loss.item(),
-                    "chosen_reward": chosen_reward.mean().item(),
-                    "reject_reward": reject_reward.mean().item(),
-                    "acc_mean": acc_mean,
-                    "loss_mean": loss_mean,
-                }
-                # logs/checkpoints/evaluate
-                self.save_logs_and_checkpoints(args, global_step, step_bar, logs_dict)
-
-                step_bar.update()
-                global_step += 1
+                    step_bar.update()
+                    global_step += 1
+            self.strategy.print(profiler.key_averages(group_by_input_shape=True))
             epoch_bar.update()
-
+            self.strategy.print('save ckpt on epoch end, epoch: ', epoch)
+            self.strategy.save_ckpt(self.model.model, args.ckpt_path, f'epch{epoch}', args.max_ckpt_num, args.max_ckpt_mem)
         if self._wandb is not None and self.strategy.is_rank_0():
             self._wandb.finish()
 
@@ -184,7 +187,7 @@ class STSTrainer(ABC):
             self.evaluate(self.eval_dataloader, global_step)
         # save ckpt
         # TODO: save best model on dev, use loss/perplexity on whole dev dataset as metric
-        if global_step % args.save_steps == 0:
+        if global_step % args.save_steps == 0 & args.save_steps > 0:
             tag = f"global_step{global_step}"
             self.strategy.save_ckpt(self.model.model, args.ckpt_path, tag, args.max_ckpt_num, args.max_ckpt_mem)
 
@@ -196,31 +199,31 @@ class STSTrainer(ABC):
                 desc="Eval stage of global_step %d" % steps,
                 disable=not self.strategy.is_rank_0(),
             )
-            acc_sum = 0
             loss_sum = 0
             times = 0
-            for chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens in eval_dataloader:
-                chosen_ids = chosen_ids.squeeze(1).to(torch.cuda.current_device())
-                c_mask = c_mask.squeeze(1).to(torch.cuda.current_device())
-                reject_ids = reject_ids.squeeze(1).to(torch.cuda.current_device())
-                r_mask = r_mask.squeeze(1).to(torch.cuda.current_device())
+            for sentence1_ids, sentence1_masks, sentence2_ids, sentence2_masks, labels in self.train_dataloader:
+                sentence1_ids = sentence1_ids.squeeze(1).to(torch.cuda.current_device())
+                sentence1_masks = sentence1_masks.squeeze(1).to(torch.cuda.current_device())
+                sentence2_ids = sentence2_ids.squeeze(1).to(torch.cuda.current_device())
+                sentence2_masks = sentence2_masks.squeeze(1).to(torch.cuda.current_device())
 
-                chosen_logps, rejected_logps, _ = self.concatenated_forward(
-                    self.model, chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens
-                )
-                reference_chosen_logps, reference_rejected_logps, _ = self.concatenated_forward(
-                    self.ref_model, chosen_ids, c_mask, reject_ids, r_mask, prompt_id_lens
-                )
-                loss, chosen_reward, reject_reward = self.loss_fn(
-                    chosen_logps, rejected_logps, reference_chosen_logps, reference_rejected_logps
-                )
-                acc_sum += (chosen_reward > reject_reward).float().mean().item()
+                sentence1_output = self.model.model(sentence1_ids, attention_mask=sentence1_masks, output_hidden_states=True)
+                sentence2_output = self.model.model(sentence2_ids, attention_mask=sentence2_masks, output_hidden_states=True)
+                sentence1_hidden = sentence1_output.hidden_states[-1]
+                sentence2_hidden = sentence2_output.hidden_states[-1]
+                # mean pooling
+                sentence1_embed = (sentence1_hidden * sentence1_masks.unsqueeze(-1)).sum(1) / sentence1_masks.sum(1).unsqueeze(1)
+                sentence2_embed = (sentence2_hidden * sentence2_masks.unsqueeze(-1)).sum(1) / sentence2_masks.sum(1).unsqueeze(1)
+                # normalize
+                sentence1_embed = F.normalize(sentence1_embed, p=2, dim=1)
+                sentence2_embed = F.normalize(sentence2_embed, p=2, dim=1)
+
+                loss = self.loss_fn([sentence1_embed, sentence2_embed], labels)
                 loss_sum += loss.item()
                 times += 1
 
                 logs = {
                     "eval_loss": loss_sum / times,
-                    "acc_mean": acc_sum / times,
                 }
                 logs = self.strategy.all_reduce(logs)
                 step_bar.set_postfix(logs)
