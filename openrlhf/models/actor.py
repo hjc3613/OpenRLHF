@@ -59,7 +59,7 @@ def load_model_class(model_path, decoder_layer_name=None):
 
 def load_huggingface_model(path, device_map, nf4_config, bf16, model_type, low_cpu=True):
     Model, DecoderLayer, ModelConfig = get_model_class(model_type)
-    if model_type=='qwen1':
+    if 'qwen1' in model_type:
         flash_attn_args = {
                 'use_flash_attn':True
             }
@@ -69,6 +69,7 @@ def load_huggingface_model(path, device_map, nf4_config, bf16, model_type, low_c
             }
     if low_cpu:
         if dist.get_rank() == 0:
+            print(f'process: {torch.cuda.current_device()} load from disk to cpu')
             model = Model.from_pretrained(
                 path,
                 device_map=device_map,
@@ -87,9 +88,11 @@ def load_huggingface_model(path, device_map, nf4_config, bf16, model_type, low_c
                 # quantization_config=nf4_config,
                 **flash_attn_args
             )
+            print(f'process: {torch.cuda.current_device()} load from config to meta device')
             with torch.device('meta'):
                 model = Model(config)
     else:
+        print(f'each process load model from disk,process: {torch.cuda.current_device()}')
         model = Model.from_pretrained(
                 path,
                 trust_remote_code=True,

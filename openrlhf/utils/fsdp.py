@@ -218,11 +218,12 @@ class FSDPStrategy(ABC):
         collate_fn=None,
         drop_last=True,
         sampler=None,
+        batch_sampler=None
     ):
         # DDP only mode, replay buffers on each rank are different.
         kwargs = {}
-        if sampler is not None:
-            kwargs['batch_sampler'] = sampler
+        if batch_sampler is not None:
+            kwargs['batch_sampler'] = batch_sampler
         else:
             kwargs["batch_sampler"] = DistributedLengthBasedBatchSampler(
                                     replay_buffer,
@@ -268,6 +269,9 @@ class FSDPStrategy(ABC):
         auto_wrap_for_lora = fsdp_auto_wrap_policy_for_lora(DecoderLayer)
         
         auto_wrap_for_llama = fsdp_auto_wrap_policy_for_llama(self.args, decoder_class=DecoderLayer)
+        from torch.distributed.fsdp import (
+            MixedPrecision,
+        )
         engine = FSDP(
             model.model if is_actor else model,
             auto_wrap_policy= auto_wrap_for_lora if self.args.lora_rank > 0 else auto_wrap_for_llama,
@@ -278,7 +282,7 @@ class FSDPStrategy(ABC):
             limit_all_gathers=True,
             sync_module_states=self.args.use_fsdp,
             param_init_fn=lambda module: module.to_empty(device=torch.device("cuda"), recurse=False)
-            if self.args.use_fsdp and dist.get_rank() != 0 else None,
+            if self.args.use_fsdp and self.args.local_rank != 0 else None,
         )
         if self.args.fsdp_activation_checkpointing:
             apply_fsdp_checkpointing(model, DecoderLayer)

@@ -3,11 +3,11 @@ set -x
 export PYTHONPATH=/fl-ift/med/hujunchao/git_root/OpenRLHF
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
-DATASET='/fl-ift/med/hujunchao/git_root/llama-recipes-main/data/yingxiang_report/生成结论2/all_part_diagnose_fix_xuhao'
-PRETRAIN='/fl-ift/med/common/ziya-llama-13b-v1'
-MODEL_TYPE='llama'
-BASE1='all_part_diagnose_fix_xuhao'
-BASE2='ziya-llama-13b-v1'
+DATASET='/fl-ift/med/hujunchao/git_root/llama-recipes-main/data/yingxiang_report/mixed_task_radiology'
+PRETRAIN='/fl-ift/med/hujunchao/models/unigpt_pro_17B'
+MODEL_TYPE='qwen2'
+BASE1='mixed_task_radiology'
+BASE2='unigpt_pro_17B'
 CKPT=ckpt/${BASE1}-${BASE2}
 
 read -r -d '' training_commands <<EOF
@@ -16,14 +16,14 @@ openrlhf/cli/train_sft.py \
    --dataset ${DATASET} \
    --input_key input \
    --output_key output \
-   --train_batch_size 32 \
-   --micro_train_batch_size 4 \
+   --train_batch_size 512 \
+   --micro_train_batch_size 2 \
    --max_samples_train 200000 \
    --max_samples_eval 10 \
    --pretrain ${PRETRAIN} \
    --model_type ${MODEL_TYPE} \
-   --ckpt_path ${CKPT} \
-   --save_steps 234 \
+   --save_path ${CKPT} \
+   --save_steps -1 \
    --logging_steps 1 \
    --eval_steps -1 \
    --max_epochs 4 \
@@ -33,7 +33,9 @@ openrlhf/cli/train_sft.py \
    --load_ds_method custom \
    --fsdp_activation_checkpointing  \
    --max_ckpt_num 2 \
-   --zero_stage 3 
+   --zero_stage 3 \
+   --grad_accum_dtype fp32 \
+   --adam_offload
 EOF
     # --wandb [WANDB_TOKENS]
     # --adam_offload

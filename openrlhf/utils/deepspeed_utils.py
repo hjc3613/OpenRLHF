@@ -39,6 +39,7 @@ def get_train_ds_config(
         "zero_hpz_partition_size": zpg,
         "zero_quantized_weights": False,
         "zero_quantized_gradients": False,
+        # "fp32_optimizer_states":False,
     }
     if disable_trace_cache:
         zero_opt_dict["stage3_prefetch_bucket_size"] = 0

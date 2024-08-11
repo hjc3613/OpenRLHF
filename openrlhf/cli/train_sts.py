@@ -37,7 +37,8 @@ def train(args):
         target_modules=args.target_modules,
         ds_config=strategy.get_ds_train_config(is_actor=True),
         device_map=args.device_map,
-        model_type=args.model_type
+        model_type=args.model_type,
+        low_cpu=args.use_fsdp
     )
 
     # configure tokenizer
@@ -79,7 +80,7 @@ def train(args):
         True,
         True,
         train_dataset.collate_fn,
-        sampler=DistributedLengthBasedBatchSamplerMultiType(
+        batch_sampler=DistributedLengthBasedBatchSamplerMultiType(
             train_dataset,
             batch_size=args.micro_train_batch_size,
             rank=dist.get_rank() if dist.is_initialized() else 0,
@@ -90,7 +91,7 @@ def train(args):
 
     eval_dataloader = strategy.setup_dataloader(
         eval_dataset, args.micro_train_batch_size, True, False, eval_dataset.collate_fn,
-        sampler=DistributedLengthBasedBatchSamplerMultiType(
+        batch_sampler=DistributedLengthBasedBatchSamplerMultiType(
             train_dataset,
             batch_size=args.micro_train_batch_size,
             rank=dist.get_rank() if dist.is_initialized() else 0,

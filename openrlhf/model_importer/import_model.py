@@ -3,6 +3,10 @@ def get_model_class(model_type):
         from .qwen.configuration_qwen import QWenConfig as ModelConfig
         from .qwen.modeling_qwen import QWenLMHeadModel as Model
         from .qwen.modeling_qwen import QWenBlock as DecoderLayer
+    elif model_type == 'qwen1_sts':
+        from .qwen_sts.configuration_qwen import QWenConfig as ModelConfig
+        from .qwen_sts.modeling_qwen import QWenLMHeadModel as Model
+        from .qwen_sts.modeling_qwen import QWenBlock as DecoderLayer
     elif model_type == 'qwen2_sts':
         from .qwen2_sts.configuration_qwen2 import Qwen2Config as ModelConfig
         from .qwen2_sts.modeling_qwen2 import Qwen2ForCausalLM as Model

@@ -2,10 +2,11 @@ set -x
 # export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 export PYTHONPATH=/fl-ift/med/hujunchao/git_root/OpenRLHF
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1200
 
 DATASET='/fl-ift/med/hujunchao/git_root/llama-recipes-main/data/yingxiang_report/生成结论2/all_part_diagnose_fix_xuhao'
-PRETRAIN='/fl-ift/med/common/ziya-llama-13b-v1'
-MODEL_TYPE='llama'
+PRETRAIN='/fl-ift/med/common/Qwen1.5-14B-Base'
+MODEL_TYPE='qwen2'
 BASE1='all_part_diagnose_fix_xuhao'
 BASE2='ziya-llama-13b-v1'
 CKPT=ckpt/${BASE1}-${BASE2}
@@ -44,7 +45,7 @@ EOF
     # --gradient_checkpointing
     # --save_path ./checkpoint/qwen-14b-sft-fsdp 
 if [[ ${1} != "slurm" ]]; then
-    export PATH=$HOME/.local/bin/:$PATH
+    # export PATH=$HOME/.local/bin/:$PATH
     torchrun --nnodes 1 --nproc_per_node 8 $training_commands
     # deepspeed --module $training_commands
 

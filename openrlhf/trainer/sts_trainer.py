@@ -7,6 +7,8 @@ import torch.nn.functional as F
 from torch.optim import Optimizer
 from torch.utils.data import DistributedSampler
 from tqdm import tqdm
+import io
+import os
 
 from openrlhf.models import SoftmaxLoss, MultipleNegativesRankingLoss, CoSENTLoss
 
@@ -115,8 +117,8 @@ class STSTrainer(ABC):
                 tmp = 0
                 for sentence1_ids, sentence1_masks, sentence2_ids, sentence2_masks, labels, label_types in self.train_dataloader:
                     tmp +=1
-                    if tmp==3:
-                        break
+                    # if tmp==3:
+                    #     break
                     sentence1_ids = sentence1_ids.squeeze(1).to(torch.cuda.current_device())
                     sentence1_masks = sentence1_masks.squeeze(1).to(torch.cuda.current_device())
                     sentence2_ids = sentence2_ids.squeeze(1).to(torch.cuda.current_device())
@@ -158,10 +160,15 @@ class STSTrainer(ABC):
 
                     step_bar.update()
                     global_step += 1
-            self.strategy.print(profiler.key_averages(group_by_input_shape=True))
+            profiler_result = io.StringIO()
+            profiler.key_averages(group_by_input_shape=True).print_to_file(profiler_result)
+            profiler_result = profiler_result.getvalue()
+            with open(os.path.join(args.ckpt_path, 'profiler.txt'), mode='2') as f:
+                f.write(profiler_result)
             epoch_bar.update()
-            self.strategy.print('save ckpt on epoch end, epoch: ', epoch)
-            self.strategy.save_ckpt(self.model.model, args.ckpt_path, f'epch{epoch}', args.max_ckpt_num, args.max_ckpt_mem)
+            if 'FSDP' in self.strategy.__class__.__name__:
+                self.strategy.print('fsdp save ckpt on epoch end, epoch: ', epoch)
+                self.strategy.save_ckpt(self.model.model, args.ckpt_path, f'epch{epoch}', args.max_ckpt_num, args.max_ckpt_mem)
         if self._wandb is not None and self.strategy.is_rank_0():
             self._wandb.finish()
 
@@ -187,7 +194,7 @@ class STSTrainer(ABC):
             self.evaluate(self.eval_dataloader, global_step)
         # save ckpt
         # TODO: save best model on dev, use loss/perplexity on whole dev dataset as metric
-        if global_step % args.save_steps == 0 & args.save_steps > 0:
+        if global_step % args.save_steps == 0 and args.save_steps > 0:
             tag = f"global_step{global_step}"
             self.strategy.save_ckpt(self.model.model, args.ckpt_path, tag, args.max_ckpt_num, args.max_ckpt_mem)
 

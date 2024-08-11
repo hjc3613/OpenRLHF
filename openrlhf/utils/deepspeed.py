@@ -118,9 +118,19 @@ class DeepspeedStrategy(ABC):
         collate_fn=None,
         drop_last=True,
         sampler=None,
+        batch_sampler=None,
     ):
         # DDP only mode, replay buffers on each rank are different.
-        if sampler is None:
+        if batch_sampler is not None and sampler is not None:
+            raise Exception('sampler and batch_sampler cannot be set simultaneous')
+        if batch_sampler is not None:
+            return DataLoader(
+            replay_buffer,
+            batch_sampler=batch_sampler,
+            collate_fn=collate_fn,
+            pin_memory=pin_memory,
+        )
+        else:
             sampler = DistributedSampler(
                 replay_buffer,
                 num_replicas=dist.get_world_size(),
@@ -130,14 +140,14 @@ class DeepspeedStrategy(ABC):
                 drop_last=drop_last,
             )
 
-        return DataLoader(
-            replay_buffer,
-            batch_size=batch_size,
-            sampler=sampler,
-            drop_last=drop_last,
-            collate_fn=collate_fn,
-            pin_memory=pin_memory,
-        )
+            return DataLoader(
+                replay_buffer,
+                batch_size=batch_size,
+                sampler=sampler,
+                drop_last=drop_last,
+                collate_fn=collate_fn,
+                pin_memory=pin_memory,
+            )
 
     def _unwrap_model(self, model) -> nn.Module:
         if isinstance(model, Actor):
@@ -451,7 +461,7 @@ class NoDeepspeedStrategy(DeepspeedStrategy):
         if len(replay_buffer) == 0:
             kwargs["batch_sampler"] = None
         elif sampler is not None:
-            kwargs['batch_sampler'] = sampler
+            kwargs['sampler'] = sampler
         else:
             kwargs["batch_sampler"] = DistributedLengthBasedBatchSampler(
                                     replay_buffer,

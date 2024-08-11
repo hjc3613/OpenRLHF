@@ -5,9 +5,9 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 
 DATASET='/fl-ift/med/hujunchao/git_root/OpenRLHF/data/icd10_sts/sts_score_train.xlsx#None#score,/fl-ift/med/hujunchao/git_root/OpenRLHF/data/icd10_sts/sts_class.xlsx#None#None'
-PRETRAIN='/fl-ift/med/common/Qwen1.5-14B'
+PRETRAIN='/fl-ift/med/common/Qwen-14B-Base'
 BASE1='icd10_sts'
-BASE2='Qwen1.5-14B'
+BASE2='Qwen-14B-Base'
 CKPT=ckpt/${BASE1}-${BASE2}
 
 read -r -d '' training_commands <<EOF
@@ -22,7 +22,7 @@ openrlhf/cli/train_sts.py \
    --max_samples_train 1000000 \
    --max_samples_eval 10 \
    --pretrain ${PRETRAIN} \
-   --model_type qwen2_sts \
+   --model_type qwen1_sts \
    --ckpt_path ${CKPT} \
    --save_steps -1 \
    --logging_steps 1 \
@@ -35,7 +35,7 @@ openrlhf/cli/train_sts.py \
    --max_ckpt_num 2 \
    --use_fsdp \
    --fsdp_activation_checkpointing \
-   --parallel_granularity weight
+   --parallel_granularity decoder_layer
 EOF
     # --wandb [WANDB_TOKENS]
     # --adam_offload
