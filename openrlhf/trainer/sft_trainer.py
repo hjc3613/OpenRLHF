@@ -169,6 +169,12 @@ class SFTTrainer(ABC):
                 global_step += 1
 
             epoch_bar.update()
+            if 'FSDP' in self.strategy.__class__.__name__:
+                self.strategy.print('fsdp save ckpt on epoch end, epoch: ', epoch)
+                self.strategy.save_ckpt(self.model.model, args.ckpt_path, f'epch{epoch}', args.max_ckpt_num, args.max_ckpt_mem)
+            else:
+                self.strategy.print('deepspeed save model on epoch end, epoch: ', epoch)
+                self.strategy.save_model(self.model, self.tokenizer, self.args.save_path)
 
     # logs/checkpoints/evaluation
     def save_logs_and_checkpoints(self, args, global_step, step_bar, logs_dict={}):

@@ -3,6 +3,7 @@ import random
 import numpy as np
 from itertools import islice
 from collections import defaultdict
+from copy import deepcopy
 
 class LengthBasedBatchSampler(torch.utils.data.BatchSampler):
     def __init__(self, data_source, batch_size: int, drop_last: bool, shuffle: bool=True) -> None:
@@ -36,7 +37,7 @@ class LengthBasedBatchSampler(torch.utils.data.BatchSampler):
         else:
             return len(self.lengths) // self.batch_size + (len(self.lengths) % self.batch_size > 0)
         
-class LengthBasedBatchSamplerMultiType(torch.utils.data.BatchSampler):
+class STSSampler(torch.utils.data.BatchSampler):
     '''
     用于STSDataset, 向量相似度训练集分两种格式，即label_type取值为2中：label_type为score，一般用cosent loss，label_type为None，即无label，一般为(anchor, positive)对
     data_source每个element中的最后一项即为label_type
@@ -51,13 +52,16 @@ class LengthBasedBatchSamplerMultiType(torch.utils.data.BatchSampler):
         self.shuffle = shuffle
 
     def __iter__(self):
+        random.seed(42)
         total_batches = 0
-        for k, v in self.label_type_to_indices.items():
+        label_type_to_indices = deepcopy(self.label_type_to_indices)
+        label_types = deepcopy(self.label_types)
+        for k, v in label_type_to_indices.items():
             total_batches += len(v) // self.batch_size
         batches = []
         for _ in range(total_batches):
-            label_type = random.choice(self.label_types)
-            indices = self.label_type_to_indices[label_type]
+            label_type = random.choice(label_types)
+            indices = label_type_to_indices[label_type]
             if len(indices) < self.batch_size:
                 continue
             else:
@@ -65,19 +69,22 @@ class LengthBasedBatchSamplerMultiType(torch.utils.data.BatchSampler):
 
             batches.append(batch_indices)
             # Remove these indices from the list to avoid reuse
-            self.label_type_to_indices[label_type] = [
-                idx for idx in self.label_type_to_indices[label_type] if idx not in batch_indices
+            label_type_to_indices[label_type] = [
+                idx for idx in label_type_to_indices[label_type] if idx not in batch_indices
             ]
 
             # If a label_type list becomes empty, remove it from the label_types list
-            if len(self.label_type_to_indices[label_type]) < self.batch_size:
-                self.label_types.remove(label_type)
-        return iter(batches)
+            if len(label_type_to_indices[label_type]) < self.batch_size:
+                label_types.remove(label_type)
+        print('sts dataset iter len(batches) = ', len(batches), '\n')
+        for batch in batches:
+            yield batch
 
     def __len__(self):
         length = 0
         for k, v in self.label_type_to_indices.items():
             length += len(v) // self.batch_size
+        print('sts dataset len length = ', length, '\n')
         return length
 
 class DistributedLengthBasedBatchSampler(torch.utils.data.BatchSampler):
@@ -96,10 +103,10 @@ class DistributedLengthBasedBatchSampler(torch.utils.data.BatchSampler):
     def __len__(self):
         return len(self.batch_sampler) // self.num_replicas
     
-class DistributedLengthBasedBatchSamplerMultiType(torch.utils.data.BatchSampler):
+class DistributedSTSSmpler(torch.utils.data.BatchSampler):
     def __init__(self, data_source, batch_size: int, num_replicas: int, rank: int, shuffle: bool = True, seed: int = 0) -> None:
         random.seed(seed)
-        self.batch_sampler = LengthBasedBatchSamplerMultiType(
+        self.batch_sampler = STSSampler(
             data_source, batch_size=batch_size, drop_last=True, shuffle=shuffle
             )
         self.num_replicas = num_replicas

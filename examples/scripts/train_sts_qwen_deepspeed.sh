@@ -5,9 +5,9 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 
 DATASET='/fl-ift/med/hujunchao/git_root/OpenRLHF/data/icd10_sts/sts_score_train.xlsx#None#score,/fl-ift/med/hujunchao/git_root/OpenRLHF/data/icd10_sts/sts_class.xlsx#None#None'
-PRETRAIN='/fl-ift/med/common/Qwen1.5-14B-Base'
+PRETRAIN='/fl-ift/med/common/qwen2-7b'
 BASE1='icd10_sts'
-BASE2='Qwen1.5-14B-Base'
+BASE2='qwen2-7b'
 CKPT=ckpt/${BASE1}-${BASE2}
 
 read -r -d '' training_commands <<EOF
@@ -20,10 +20,10 @@ openrlhf.cli.train_sts \
    --train_batch_size 128 \
    --micro_train_batch_size 8 \
    --max_samples_train 1000000 \
-   --max_samples_eval 10 \
+   --max_samples_eval 256 \
    --pretrain ${PRETRAIN} \
    --model_type qwen2_sts \
-   --ckpt_path ${CKPT} \
+   --save_path ${CKPT} \
    --save_steps -1 \
    --logging_steps 1 \
    --eval_steps -1 \
@@ -34,7 +34,9 @@ openrlhf.cli.train_sts \
    --load_ds_method custom \
    --max_ckpt_num 2 \
    --zero_stage 3 \
-   --grad_accum_dtype
+   --grad_accum_dtype fp32 \
+   --gradient_checkpointing \
+   --gradient_checkpointing_use_reentrant 
 EOF
     # --wandb [WANDB_TOKENS]
     # --adam_offload
@@ -42,6 +44,7 @@ EOF
     # --decoder_layer_name Qwen2DecoderLayer|QWenBlock
     # --fsdp_activation_checkpointing
     # --gradient_checkpointing
+    # --gradient_checkpointing_use_reentrant
     # --save_path ./checkpoint/qwen-14b-sft-fsdp 
 if [[ ${1} != "slurm" ]]; then
     export PATH=$HOME/.local/bin/:$PATH

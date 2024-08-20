@@ -27,11 +27,13 @@ def jload_v2(f, mode="r"):
     for line in tqdm(f, desc='load dataset...'):
         jdict.append(json.loads(line))
     f.close
+    print(f'load from file {f} examples: {len(jdict)}')
     return jdict
 
 def xlsload(f):
     df = pd.read_excel(f).fillna('')
     result = [dict(row) for idx, row in df.iterrows()]
+    print(f'load from file {f} examples: {len(result)}')
     return result
 
 def load_file(file:str):

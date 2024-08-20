@@ -91,12 +91,6 @@ class STSTrainer(ABC):
             desc="Train epoch",
             disable=not self.strategy.is_rank_0(),
         )
-        profiler = torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            record_shapes=True,
-            profile_memory=True,
-            with_stack=True
-        )
         for epoch in range(self.epochs):
             step_bar = tqdm(
                 range(self.train_dataloader.__len__()),
@@ -105,6 +99,7 @@ class STSTrainer(ABC):
             )
 
             if isinstance(self.train_dataloader.sampler, DistributedSampler):
+                print('train_dataloader.sampler is isinstance of DistributedSampler')
                 self.train_dataloader.sampler.set_epoch(epoch)
 
             self.model.train()
@@ -113,62 +108,59 @@ class STSTrainer(ABC):
             loss_none = 0
             loss_mean_none = 0
             # train
-            with profiler:
-                tmp = 0
-                for sentence1_ids, sentence1_masks, sentence2_ids, sentence2_masks, labels, label_types in self.train_dataloader:
-                    tmp +=1
-                    # if tmp==3:
-                    #     break
-                    sentence1_ids = sentence1_ids.squeeze(1).to(torch.cuda.current_device())
-                    sentence1_masks = sentence1_masks.squeeze(1).to(torch.cuda.current_device())
-                    sentence2_ids = sentence2_ids.squeeze(1).to(torch.cuda.current_device())
-                    sentence2_masks = sentence2_masks.squeeze(1).to(torch.cuda.current_device())
+            tmp = 0
+            for sentence1_ids, sentence1_masks, sentence2_ids, sentence2_masks, labels, label_types in self.train_dataloader:
+                tmp +=1
+                # if tmp==3:
+                #     break
+                sentence1_ids = sentence1_ids.squeeze(1).to(torch.cuda.current_device())
+                sentence1_masks = sentence1_masks.squeeze(1).to(torch.cuda.current_device())
+                sentence2_ids = sentence2_ids.squeeze(1).to(torch.cuda.current_device())
+                sentence2_masks = sentence2_masks.squeeze(1).to(torch.cuda.current_device())
 
-                    sentence1_output = self.model.model(sentence1_ids, attention_mask=sentence1_masks, output_hidden_states=True)
-                    sentence2_output = self.model.model(sentence2_ids, attention_mask=sentence2_masks, output_hidden_states=True)
-                    sentence1_hidden = sentence1_output.hidden_states[-1]
-                    sentence2_hidden = sentence2_output.hidden_states[-1]
-                    # mean pooling
-                    sentence1_embed = (sentence1_hidden * sentence1_masks.unsqueeze(-1)).sum(1) / sentence1_masks.sum(1).unsqueeze(1)
-                    sentence2_embed = (sentence2_hidden * sentence2_masks.unsqueeze(-1)).sum(1) / sentence2_masks.sum(1).unsqueeze(1)
-                    # normalize
-                    sentence1_embed = F.normalize(sentence1_embed, p=2, dim=1)
-                    sentence2_embed = F.normalize(sentence2_embed, p=2, dim=1)
-                    if label_types[0] == 'score':
-                        labels = torch.concat(labels).to(sentence1_embed.device)
-                        loss = self.loss_fn_cosent([sentence1_embed, sentence2_embed], labels)
-                    elif label_types[0] == 'None':
-                        loss = self.loss_fn_multi_neg_rank([sentence1_embed, sentence2_embed])
-                    
-                    self.strategy.backward(loss, self.model, self.optimizer)
-                    self.strategy.optimizer_step(self.optimizer, self.model, self.scheduler)
-                    if label_types[0] == 'score':
-                        loss_mean_score = loss_mean_score * 0.9 + 0.1 * loss.item()
-                        loss_score = loss.item()
-                    if label_types[0] == 'None':
-                        loss_mean_none = loss_mean_none * 0.9 + 0.1 * loss.item()
-                        loss_none = loss.item()
-                    # dpo logs
-                    logs_dict = {
-                        'ls_score':loss_score,
-                        "ls_m_score": loss_mean_score,
-                        "ls_m_none":loss_mean_none,
-                        'ls_none':loss_none
-                    }
-                    # logs/checkpoints/evaluate
-                    self.save_logs_and_checkpoints(args, global_step, step_bar, logs_dict)
+                sentence1_output = self.model.model(sentence1_ids, attention_mask=sentence1_masks, output_hidden_states=True)
+                sentence2_output = self.model.model(sentence2_ids, attention_mask=sentence2_masks, output_hidden_states=True)
+                sentence1_hidden = sentence1_output.hidden_states[-1]
+                sentence2_hidden = sentence2_output.hidden_states[-1]
+                # mean pooling
+                sentence1_embed = (sentence1_hidden * sentence1_masks.unsqueeze(-1)).sum(1) / sentence1_masks.sum(1).unsqueeze(1)
+                sentence2_embed = (sentence2_hidden * sentence2_masks.unsqueeze(-1)).sum(1) / sentence2_masks.sum(1).unsqueeze(1)
+                # normalize
+                sentence1_embed = F.normalize(sentence1_embed, p=2, dim=1)
+                sentence2_embed = F.normalize(sentence2_embed, p=2, dim=1)
+                if label_types[0] == 'score':
+                    labels = torch.concat(labels).to(sentence1_embed.device)
+                    loss = self.loss_fn_cosent([sentence1_embed, sentence2_embed], labels)
+                elif label_types[0] == 'None':
+                    loss = self.loss_fn_multi_neg_rank([sentence1_embed, sentence2_embed])
+                
+                self.strategy.backward(loss, self.model, self.optimizer)
+                self.strategy.optimizer_step(self.optimizer, self.model, self.scheduler)
+                if label_types[0] == 'score':
+                    loss_mean_score = loss_mean_score * 0.9 + 0.1 * loss.item()
+                    loss_score = loss.item()
+                if label_types[0] == 'None':
+                    loss_mean_none = loss_mean_none * 0.9 + 0.1 * loss.item()
+                    loss_none = loss.item()
+                # dpo logs
+                logs_dict = {
+                    'ls_score':loss_score,
+                    "ls_m_score": loss_mean_score,
+                    "ls_m_none":loss_mean_none,
+                    'ls_none':loss_none
+                }
+                # logs/checkpoints/evaluate
+                self.save_logs_and_checkpoints(args, global_step, step_bar, logs_dict)
 
-                    step_bar.update()
-                    global_step += 1
-            profiler_result = io.StringIO()
-            profiler.key_averages(group_by_input_shape=True).print_to_file(profiler_result)
-            profiler_result = profiler_result.getvalue()
-            with open(os.path.join(args.ckpt_path, 'profiler.txt'), mode='2') as f:
-                f.write(profiler_result)
+                step_bar.update()
+                global_step += 1
             epoch_bar.update()
             if 'FSDP' in self.strategy.__class__.__name__:
                 self.strategy.print('fsdp save ckpt on epoch end, epoch: ', epoch)
                 self.strategy.save_ckpt(self.model.model, args.ckpt_path, f'epch{epoch}', args.max_ckpt_num, args.max_ckpt_mem)
+            else:
+                self.strategy.print('deepspeed save model on epoch end, epoch: ', epoch)
+                self.strategy.save_model(self.model, self.tokenizer, self.args.save_path)
         if self._wandb is not None and self.strategy.is_rank_0():
             self._wandb.finish()
 
@@ -190,11 +182,11 @@ class STSTrainer(ABC):
                 self._wandb.log(logs)
 
         # eval
-        if global_step % args.eval_steps == 0:
+        if (global_step % args.eval_steps == 0) and (args.eval_steps > 0):
             self.evaluate(self.eval_dataloader, global_step)
         # save ckpt
         # TODO: save best model on dev, use loss/perplexity on whole dev dataset as metric
-        if global_step % args.save_steps == 0 and args.save_steps > 0:
+        if (global_step % args.save_steps == 0) and (args.save_steps > 0):
             tag = f"global_step{global_step}"
             self.strategy.save_ckpt(self.model.model, args.ckpt_path, tag, args.max_ckpt_num, args.max_ckpt_mem)
 
@@ -206,9 +198,11 @@ class STSTrainer(ABC):
                 desc="Eval stage of global_step %d" % steps,
                 disable=not self.strategy.is_rank_0(),
             )
-            loss_sum = 0
-            times = 0
-            for sentence1_ids, sentence1_masks, sentence2_ids, sentence2_masks, labels in self.train_dataloader:
+            loss_score = 0
+            loss_score_times = 0
+            loss_none = 0
+            loss_none_times = 0
+            for sentence1_ids, sentence1_masks, sentence2_ids, sentence2_masks, labels, label_types in eval_dataloader:
                 sentence1_ids = sentence1_ids.squeeze(1).to(torch.cuda.current_device())
                 sentence1_masks = sentence1_masks.squeeze(1).to(torch.cuda.current_device())
                 sentence2_ids = sentence2_ids.squeeze(1).to(torch.cuda.current_device())
@@ -225,12 +219,19 @@ class STSTrainer(ABC):
                 sentence1_embed = F.normalize(sentence1_embed, p=2, dim=1)
                 sentence2_embed = F.normalize(sentence2_embed, p=2, dim=1)
 
-                loss = self.loss_fn([sentence1_embed, sentence2_embed], labels)
-                loss_sum += loss.item()
-                times += 1
-
+                if label_types[0] == 'score':
+                    labels = torch.concat(labels).to(sentence1_embed.device)
+                    loss = self.loss_fn_cosent([sentence1_embed, sentence2_embed], labels)
+                    loss_score += loss.item()
+                    loss_score_times += 1
+                elif label_types[0] == 'None':
+                    loss = self.loss_fn_multi_neg_rank([sentence1_embed, sentence2_embed])
+                    loss_none += loss.item()
+                    loss_none_times += 1
+                
                 logs = {
-                    "eval_loss": loss_sum / times,
+                    "loss_socore": (loss_score / loss_score_times) if loss_score_times > 0 else -1,
+                    'loss_none': (loss_none / loss_none_times) if loss_none_times > 0 else -1,
                 }
                 logs = self.strategy.all_reduce(logs)
                 step_bar.set_postfix(logs)

@@ -11,7 +11,7 @@ from openrlhf.datasets import STSDataset
 from openrlhf.models import Actor
 from openrlhf.trainer import STSTrainer
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
-from openrlhf.datasets.batch_sampler import DistributedLengthBasedBatchSamplerMultiType
+from openrlhf.datasets.batch_sampler import DistributedSTSSmpler
 
 def create_dataloader(dataset, strategy, args, tokenizer):
     dataset, subset, type = dataset.split('#')
@@ -80,7 +80,7 @@ def train(args):
         True,
         True,
         train_dataset.collate_fn,
-        batch_sampler=DistributedLengthBasedBatchSamplerMultiType(
+        batch_sampler=DistributedSTSSmpler(
             train_dataset,
             batch_size=args.micro_train_batch_size,
             rank=dist.get_rank() if dist.is_initialized() else 0,
@@ -91,12 +91,12 @@ def train(args):
 
     eval_dataloader = strategy.setup_dataloader(
         eval_dataset, args.micro_train_batch_size, True, False, eval_dataset.collate_fn,
-        batch_sampler=DistributedLengthBasedBatchSamplerMultiType(
-            train_dataset,
+        batch_sampler=DistributedSTSSmpler(
+            eval_dataset,
             batch_size=args.micro_train_batch_size,
             rank=dist.get_rank() if dist.is_initialized() else 0,
             num_replicas=dist.get_world_size() if dist.is_initialized() else 1,
-            shuffle=True,
+            shuffle=False,
         )
     )
     
