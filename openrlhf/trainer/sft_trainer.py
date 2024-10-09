@@ -11,6 +11,7 @@ from transformers.trainer import get_scheduler
 from openrlhf.datasets import SFTDataset
 from openrlhf.datasets.packing_utils import patch_for_block_diag_attn
 from openrlhf.models import GPTLMLoss
+from openrlhf.utils.deepspeed import DeepspeedStrategy
 
 
 class SFTTrainer(ABC):
@@ -43,7 +44,7 @@ class SFTTrainer(ABC):
         tokenizer=None,
     ) -> None:
         super().__init__()
-        self.strategy = strategy
+        self.strategy: DeepspeedStrategy = strategy
         self.epochs = max_epochs
         self.batch_size = batch_size
         self.max_norm = max_norm
@@ -174,7 +175,8 @@ class SFTTrainer(ABC):
                 self.strategy.save_ckpt(self.model.model, args.ckpt_path, f'epch{epoch}', args.max_ckpt_num, args.max_ckpt_mem)
             else:
                 self.strategy.print('deepspeed save model on epoch end, epoch: ', epoch)
-                self.strategy.save_model(self.model, self.tokenizer, self.args.save_path)
+                # self.strategy.save_model(self.model, self.tokenizer, self.args.save_path)
+                self.strategy.save_ckpt(self.model.model, save_dir=args.ckpt_path, max_num=1, tag=f'epoch_{epoch}')
 
     # logs/checkpoints/evaluation
     def save_logs_and_checkpoints(self, args, global_step, step_bar, logs_dict={}):

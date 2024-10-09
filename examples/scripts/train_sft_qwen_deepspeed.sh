@@ -3,12 +3,13 @@ set -x
 export PYTHONPATH=/fl-ift/med/hujunchao/git_root/OpenRLHF
 export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
-DATASET='/fl-ift/med/hujunchao/git_root/llama-recipes-main/data/yingxiang_report/mixed_task_radiology'
+DATASET='data/yingxiang_baogao/mixed_task_radiology'
+# DATASET='/fl-ift/med/hujunchao/git_root/llama-recipes-main/data/yingxiang_report/diag2abnormal'
 # PRETRAIN='/fl-ift/med/hujunchao/models/unigpt_pro_17B'
-PRETRAIN='/fl-ift/med/common/14B_1_5_unigpt2-08-02-00-data0807'
+PRETRAIN='/fl-ift/med/common/Qwen2.5-72B-Instruct'
 MODEL_TYPE='qwen2'
-BASE1='mixed_task_radiology'
-BASE2='unigpt_02'
+BASE1='mixed_task_radiology_noise'
+BASE2='Qwen2.5-72B-Instruct'
 CKPT=/fl-ift/med/hujunchao/models/${BASE1}-${BASE2}
 
 read -r -d '' training_commands <<EOF
@@ -27,7 +28,7 @@ openrlhf.cli.train_sft \
    --save_steps -1 \
    --logging_steps 1 \
    --eval_steps -1 \
-   --max_epochs 4 \
+   --max_epochs 5 \
    --bf16 \
    --flash_attn \
    --learning_rate 2e-5 \
@@ -37,7 +38,8 @@ openrlhf.cli.train_sft \
    --zero_stage 3 \
    --grad_accum_dtype fp32 \
    --gradient_checkpointing \
-   --gradient_checkpointing_use_reentrant
+   --gradient_checkpointing_use_reentrant \
+   --adam_offload
 EOF
     # --wandb [WANDB_TOKENS]
     # --adam_offload

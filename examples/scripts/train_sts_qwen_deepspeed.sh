@@ -5,9 +5,9 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
 
 DATASET='/fl-ift/med/hujunchao/git_root/OpenRLHF/data/icd10_sts/sts_score_train.xlsx#None#score,/fl-ift/med/hujunchao/git_root/OpenRLHF/data/icd10_sts/sts_class.xlsx#None#None'
-PRETRAIN='/fl-ift/med/common/qwen2-7b'
+PRETRAIN='/fl-ift/med/common/Qwen1.5-14B-Base'
 BASE1='icd10_sts'
-BASE2='qwen2-7b'
+BASE2='Qwen1.5-14B-Base'
 CKPT=ckpt/${BASE1}-${BASE2}
 
 read -r -d '' training_commands <<EOF
