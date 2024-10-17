@@ -106,7 +106,7 @@ class SFTTrainer(ABC):
             desc="Train epoch",
             disable=not self.strategy.is_rank_0(),
         )
-        for epoch in range(self.epochs):
+        for epoch in range(1,self.epochs+1):
             if isinstance(self.train_dataloader.sampler, DistributedSampler):
                 self.train_dataloader.sampler.set_epoch(epoch)
 
@@ -176,7 +176,7 @@ class SFTTrainer(ABC):
             else:
                 self.strategy.print('deepspeed save model on epoch end, epoch: ', epoch)
                 # self.strategy.save_model(self.model, self.tokenizer, self.args.save_path)
-                self.strategy.save_ckpt(self.model.model, save_dir=args.ckpt_path, max_num=1, tag=f'epoch_{epoch}')
+                self.strategy.save_ckpt(self.model.model, save_dir=args.ckpt_path, max_num=args.max_ckpt_num, tag=f'epoch_{epoch}')
 
     # logs/checkpoints/evaluation
     def save_logs_and_checkpoints(self, args, global_step, step_bar, logs_dict={}):
@@ -199,9 +199,9 @@ class SFTTrainer(ABC):
             self.evaluate(self.eval_dataloader, global_step)
         # save ckpt
         # TODO: save best model on dev, use loss/perplexity on whole dev dataset as metric
-        if global_step % args.save_steps == 0:
-            tag = f"global_step{global_step}"
-            self.strategy.save_ckpt(self.model.model, args.ckpt_path, tag, args.max_ckpt_num, args.max_ckpt_mem)
+        # if global_step % args.save_steps == 0:
+        #     tag = f"global_step{global_step}"
+        #     self.strategy.save_ckpt(self.model.model, args.ckpt_path, tag, args.max_ckpt_num, args.max_ckpt_mem)
 
     def evaluate(self, eval_dataloader, steps=0):
         times = 0
