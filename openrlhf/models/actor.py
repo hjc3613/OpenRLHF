@@ -130,6 +130,7 @@ class Actor(nn.Module):
         transformer_layers_path=None,
         low_cpu=False,
         model_type=None,
+        is_ref=False,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -172,7 +173,7 @@ class Actor(nn.Module):
                 low_cpu=low_cpu,
                 model_type=model_type
             )
-            if freeze_strategy:
+            if freeze_strategy and not is_ref:
                 assert lora_rank <=0, "冻结模式与LORA不能同时开启"
                 assert transformer_layers_path is not None, "开启冻结模式，需提供transformer_layers_path"
                 activation, layers = parse_freeze_strategy(freeze_strategy)

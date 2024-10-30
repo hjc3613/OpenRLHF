@@ -30,6 +30,12 @@ def jload_v2(f, mode="r"):
     print(f'load from file {f} examples: {len(jdict)}')
     return jdict
 
+def jload(f):
+    with open(f, encoding='utf8') as f:
+        result = json.load(f)
+    print(f'load from file {f} examples: {len(result)}')
+    return result
+
 def xlsload(f):
     df = pd.read_excel(f).fillna('')
     result = [dict(row) for idx, row in df.iterrows()]
@@ -41,6 +47,8 @@ def load_file(file:str):
         return jload_v2(file)
     elif file.endswith('.xlsx'):
         return xlsload(file)
+    elif file.endswith('.json'):
+        return jload(file)
     elif os.path.isdir(file):
         result = []
         for sub_file in os.listdir(file):
@@ -155,7 +163,7 @@ def blending_datasets(
                     strategy.print(f"load {dataset} with script {data_type}")
                 else:
                     strategy.print(f"load {files} from {dataset}")
-                data = load_dataset(data_type, data_files=files, streaming=True)
+                data = load_dataset(data_type, data_files=files, streaming=False)
             elif len(dataset_subfold_list) == 2:
                 dataset = dataset_subfold_list[0]
                 subfold = dataset_subfold_list[1]

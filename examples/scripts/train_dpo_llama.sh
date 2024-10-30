@@ -2,25 +2,37 @@ set -x
 
 read -r -d '' training_commands <<EOF
 openrlhf.cli.train_dpo \
-   --save_path ./checkpoint/llama3-8b-dpo \
+   --save_path ./ckpt/qwen2_dpo \
    --save_steps -1 \
+   --ckpt_path ./ckpt/qwen2_dpo \
    --logging_steps 1 \
    --eval_steps -1 \
-   --train_batch_size 256 \
+   --train_batch_size 16 \
    --micro_train_batch_size 1 \
-   --pretrain /fl-ift/med/common/llama3-openbiollm-8b \
+   --max_samples_train 10000 \
+   --max_samples_eval 16 \
+   --pretrain /fl-ift/med/common/Qwen2.5-72B-Instruct \
    --bf16 \
    --max_epochs 1 \
    --max_len 8192 \
    --zero_stage 3 \
-   --learning_rate 9e-6 \
+   --learning_rate 1e-5 \
    --beta 0.1 \
-   --dataset OpenLLMAI/preference_dataset_mixture2_and_safe_pku \
+   --dataset /fl-ift/med/hujunchao/datasets/comparison_data/cvalues_comparison.json \
    --ref_offload \
    --chosen_key chosen \
    --rejected_key rejected \
+   --prompt_key query \
    --flash_attn \
-   --gradient_checkpointing
+   --gradient_checkpointing \
+   --gradient_checkpointing_use_reentrant \
+   --eval_steps 100 \
+   --save_steps 100 \
+   --max_ckpt_num 1 \
+   --grad_accum_dtype fp32 \
+   --load_ds_method custom \
+   --model_type qwen2 \
+   --freeze_strategy 'freeze:1-40-1' 
 EOF
     # --wandb [WANDB_TOKENS] or True (use wandb login command)
     # --ipo [for IPO]
@@ -29,5 +41,6 @@ EOF
 
 
 if [[ ${1} != "slurm" ]]; then
-    deepspeed --module $training_commands
+    hostfile=/etc/mpi/hostfile
+    deepspeed --hostfile $hostfile --module $training_commands
 fi
